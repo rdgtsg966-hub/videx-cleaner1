@@ -62,8 +62,16 @@ app.post("/process", async (req, res) => {
 
 app.get("/file/:name", (req, res) => {
   const filePath = `/tmp/${req.params.name}`;
-  if (!fs.existsSync(filePath)) return res.status(404).send("Not found");
+  
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send("Not found");
+  }
+
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Content-Disposition", `attachment; filename="${req.params.name}"`);
+  
   return res.sendFile(filePath);
 });
+
 
 app.listen(3000, () => console.log("Render FFmpeg rodando..."));

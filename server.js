@@ -10,15 +10,13 @@ const upload = multer({ dest: "/tmp" });
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
 app.post("/process-video", upload.single("video"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).send("Nenhum arquivo recebido.");
-  }
+  if (!req.file) return res.status(400).send("Nenhum arquivo recebido.");
 
   const inputPath = req.file.path;
   const outputPath = `/tmp/out_${Date.now()}.mp4`;
 
   try {
-    // 1) Descobrir duração do vídeo
+    // Primeiro, ler a duração
     ffmpeg.ffprobe(inputPath, (err, info) => {
       if (err) {
         console.error("Erro ffprobe:", err);
@@ -26,58 +24,51 @@ app.post("/process-video", upload.single("video"), async (req, res) => {
       }
 
       const duration = info.format.duration || 0;
-      const cutDuration = duration > 3 ? duration - 3 : duration;
 
-      // 2) Filtro de blur suave na marca d'água + corte final
-      // Região aproximada da marca d'água Shopee (inferior esquerda):
-      // 30% da largura, 15% da altura, começando em 75% da altura.
+      // Garantir que nunca fique negativo
+      const cutDuration = Math.max(1, duration - 3);
+
+      // Filtro de blur na marca d'água Shopee
+      // 30% largura, 15% altura, y=75%
       const filterGraph =
-        "[0:v]split[v0][v1];" +
-        "[v0]crop=iw*0.30:ih*0.15:0:ih*0.75,boxblur=20:20[wm];" +
-        "[v1][wm]overlay=0:main_h*0.75[out]";
+        "[0:v]split=2[base][crop];" +
+        "[crop]crop=iw*0.30:ih*0.15:0:ih*0.75,boxblur=20:20[blurred];" +
+        "[base][blurred]overlay=0:main_h*0.75[outv]";
 
       ffmpeg(inputPath)
-        .complexFilter(filterGraph, "out")
+        .complexFilter(filterGraph)
         .outputOptions([
-          "-map [out]",   // vídeo filtrado
-          "-map 0:a?",    // áudio original se existir
-          "-c:a copy"     // copia o áudio
+          "-map [outv]",
+          "-map 0:a? -c:a aac -b:a 128k"
         ])
-        .setDuration(cutDuration) // corta os últimos 3 segundos
-        .output(outputPath)
+        .duration(cutDuration)
+        .on("error", (err) => {
+          console.error("Erro no FFmpeg:", err.message);
+          res.status(500).send("Erro no FFmpeg: " + err.message);
+
+          try { fs.unlinkSync(inputPath); } catch {}
+          try { fs.unlinkSync(outputPath); } catch {}
+        })
         .on("end", () => {
-          // 3) Enviar arquivo final
-          fs.readFile(outputPath, (errRead, data) => {
-            if (errRead) {
-              console.error("Erro ao ler arquivo final:", errRead);
+          fs.readFile(outputPath, (err, data) => {
+            if (err) {
+              console.error("Erro lendo arquivo final:", err);
               return res.status(500).send("Erro ao ler vídeo final.");
             }
 
             res.setHeader("Content-Type", "video/mp4");
-            res.setHeader(
-              "Content-Disposition",
-              'attachment; filename="shopee-editado.mp4"'
-            );
             res.send(data);
 
-            // limpar arquivos temporários
-            fs.unlink(inputPath, () => {});
-            fs.unlink(outputPath, () => {});
+            try { fs.unlinkSync(inputPath); } catch {}
+            try { fs.unlinkSync(outputPath); } catch {}
           });
         })
-        .on("error", (errFfmpeg) => {
-          console.error("Erro no FFmpeg:", errFfmpeg.message);
-          res.status(500).send("Erro no FFmpeg: " + errFfmpeg.message);
-          fs.unlink(inputPath, () => {});
-          fs.unlink(outputPath, () => {});
-        })
-        .run();
+        .save(outputPath);
     });
+
   } catch (e) {
     console.error("Erro geral:", e);
-    res.status(500).send("Erro interno: " + e.message);
-    fs.unlink(inputPath, () => {});
-    fs.unlink(outputPath, () => {});
+    return res.status(500).send("Erro interno: " + e.message);
   }
 });
 

@@ -1,70 +1,71 @@
 import express from "express";
-import multer from "multer";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegStatic from "ffmpeg-static";
+import fetch from "node-fetch";
 import fs from "fs";
+import { exec } from "child_process";
+import cors from "cors";
 
 const app = express();
-const upload = multer({ dest: "/tmp" });
+app.use(express.json());
+app.use(cors());
 
-ffmpeg.setFfmpegPath(ffmpegStatic);
-
-app.post("/process-video", upload.single("video"), async (req, res) => {
-  if (!req.file) return res.status(400).send("Nenhum arquivo recebido.");
-
-  const inputPath = req.file.path;
-  const outputPath = `/tmp/out_${Date.now()}.mp4`;
-
+app.post("/process", async (req, res) => {
   try {
-    ffmpeg.ffprobe(inputPath, (err, info) => {
-      if (err) return res.status(500).send("Erro ao analisar vídeo.");
+    const videoUrl = req.body.video_url;
+    if (!videoUrl) {
+      return res.status(400).json({ error: "video_url não enviado" });
+    }
 
-      const duration = info.format.duration || 0;
-      const finalDuration = Math.max(1, duration - 3); // nunca negativo
+    const input = "/tmp/input.mp4";
+    const output = `/tmp/out_${Date.now()}.mp4`;
 
-      // Filtro blur
-const filterGraph =
-  "[0:v]split=2[base][crop];" +
-  // crop: 35% largura, 12% altura, centralizado verticalmente
-  "[crop]crop=iw*0.35:ih*0.12:0:(ih*0.50 - ih*0.06),boxblur=3:3[blurred];" +
-  // overlay na esquerda e centralizado verticalmente
-  "[base][blurred]overlay=0:(main_h/2 - overlay_h/2)[outv]";
+    // baixar vídeo original
+    const response = await fetch(videoUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    fs.writeFileSync(input, Buffer.from(arrayBuffer));
 
+    // FILTER (blur fino 12% canto esquerdo)
+    const filterGraph =
+      "[0:v]split=2[base][crop];" +
+      "[crop]crop=iw*0.35:ih*0.12:0:(ih*0.50 - ih*0.06),boxblur=3:3[blurred];" +
+      "[base][blurred]overlay=0:(main_h/2 - overlay_h/2)[outv]";
 
+    // FFmpeg: aplicar blur + cortar 3 segundos no final
+    const cmd = `
+      ffmpeg -i ${input} \
+      -filter_complex "${filterGraph}" \
+      -t \`ffprobe -v error -show_entries format=duration -of csv=p=0 ${input} | awk '{print $1 - 3}'\` \
+      -map "[outv]" -map 0:a? \
+      -c:v libx264 -preset fast -c:a aac -b:a 128k \
+      -y ${output}
+    `;
 
+    exec(cmd, (err) => {
+      if (err) {
+        return res.json({
+          error: true,
+          message: "Erro no FFmpeg",
+          detalhe: err.message
+        });
+      }
 
-      const command = ffmpeg(inputPath)
-        .complexFilter(filterGraph)
-        .outputOptions([
-          "-map", "[outv]",
-          "-map", "0:a?",
-          "-c:v", "libx264",
-          "-preset", "fast",
-          "-c:a", "aac",
-          "-b:a", "128k"
-        ])
-        .duration(finalDuration)
-        .on("error", err => {
-          return res.status(500).send("Erro no FFmpeg: " + err.message);
-        })
-        .on("end", () => {
-          fs.readFile(outputPath, (err, data) => {
-            if (err) return res.status(500).send("Erro ao ler vídeo final.");
+      // Servir arquivo final
+      const publicUrl = `${req.protocol}://${req.get("host")}/file/${output.split("/").pop()}`;
 
-            res.setHeader("Content-Type", "video/mp4");
-            res.send(data);
-
-            try { fs.unlinkSync(inputPath); } catch {}
-            try { fs.unlinkSync(outputPath); } catch {}
-          });
-        })
-        .save(outputPath);
+      res.json({
+        error: false,
+        video_url: publicUrl
+      });
     });
-
   } catch (e) {
-    return res.status(500).send("Erro interno: " + e.message);
+    res.json({ error: true, message: e.message });
   }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log("API rodando na porta " + port));
+// rota para servir o vídeo final
+app.get("/file/:name", (req, res) => {
+  const filePath = `/tmp/${req.params.name}`;
+  if (!fs.existsSync(filePath)) return res.status(404).send("Not found");
+  return res.sendFile(filePath);
+});
+
+app.listen(3000, () => console.log("Render FFmpeg rodando..."));

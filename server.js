@@ -1,5 +1,4 @@
 import express from "express";
-import fetch from "node-fetch";
 import fs from "fs";
 import { exec } from "child_process";
 import cors from "cors";
@@ -18,24 +17,24 @@ app.post("/process", async (req, res) => {
     const input = "/tmp/input.mp4";
     const output = `/tmp/out_${Date.now()}.mp4`;
 
-    // baixar vídeo original
+    // Baixar o vídeo usando fetch NATIVO DO NODE
     const response = await fetch(videoUrl);
     const arrayBuffer = await response.arrayBuffer();
     fs.writeFileSync(input, Buffer.from(arrayBuffer));
 
-    // FILTER (blur fino 12% canto esquerdo)
+    // Filtro blur fino (12%)
     const filterGraph =
       "[0:v]split=2[base][crop];" +
       "[crop]crop=iw*0.35:ih*0.12:0:(ih*0.50 - ih*0.06),boxblur=3:3[blurred];" +
       "[base][blurred]overlay=0:(main_h/2 - overlay_h/2)[outv]";
 
-    // FFmpeg: aplicar blur + cortar 3 segundos no final
+    // Comando FFmpeg
     const cmd = `
       ffmpeg -i ${input} \
       -filter_complex "${filterGraph}" \
-      -t \`ffprobe -v error -show_entries format=duration -of csv=p=0 ${input} | awk '{print $1 - 3}'\` \
       -map "[outv]" -map 0:a? \
       -c:v libx264 -preset fast -c:a aac -b:a 128k \
+      -t $(ffprobe -v error -show_entries format=duration -of csv=p=0 ${input} | awk '{print $1 - 3}') \
       -y ${output}
     `;
 
@@ -48,7 +47,7 @@ app.post("/process", async (req, res) => {
         });
       }
 
-      // Servir arquivo final
+      // Servir arquivo final via URL pública
       const publicUrl = `${req.protocol}://${req.get("host")}/file/${output.split("/").pop()}`;
 
       res.json({
@@ -61,7 +60,6 @@ app.post("/process", async (req, res) => {
   }
 });
 
-// rota para servir o vídeo final
 app.get("/file/:name", (req, res) => {
   const filePath = `/tmp/${req.params.name}`;
   if (!fs.existsSync(filePath)) return res.status(404).send("Not found");

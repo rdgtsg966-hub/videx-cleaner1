@@ -23,10 +23,13 @@ app.post("/process-video", upload.single("video"), async (req, res) => {
       const finalDuration = Math.max(1, duration - 3); // nunca negativo
 
       // Filtro blur
-      const filterGraph =
-        "[0:v]split=2[base][crop];" +
-        "[crop]crop=iw*0.30:ih*0.15:0:ih*0.75,boxblur=20:20[blurred];" +
-        "[base][blurred]overlay=0:main_h*0.75[outv]";
+const filterGraph =
+  "[0:v]split=2[base][crop];" +
+  // Novo crop: 35% largura, 22% altura, centralizado verticalmente
+  "[crop]crop=iw*0.35:ih*0.22:0:(ih*0.50 - ih*0.11),boxblur=25:25[blurred];" +
+  // Overlay na esquerda e centralizado verticalmente
+  "[base][blurred]overlay=0:(main_h/2 - overlay_h/2)[outv]";
+
 
       const command = ffmpeg(inputPath)
         .complexFilter(filterGraph)

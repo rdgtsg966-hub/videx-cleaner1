@@ -16,45 +16,35 @@ app.post("/process-video", upload.single("video"), async (req, res) => {
   const outputPath = `/tmp/out_${Date.now()}.mp4`;
 
   try {
-    // Primeiro, ler a duração
     ffmpeg.ffprobe(inputPath, (err, info) => {
-      if (err) {
-        console.error("Erro ffprobe:", err);
-        return res.status(500).send("Erro ao analisar vídeo.");
-      }
+      if (err) return res.status(500).send("Erro ao analisar vídeo.");
 
       const duration = info.format.duration || 0;
+      const finalDuration = Math.max(1, duration - 3); // nunca negativo
 
-      // Garantir que nunca fique negativo
-      const cutDuration = Math.max(1, duration - 3);
-
-      // Filtro de blur na marca d'água Shopee
-      // 30% largura, 15% altura, y=75%
+      // Filtro blur
       const filterGraph =
         "[0:v]split=2[base][crop];" +
         "[crop]crop=iw*0.30:ih*0.15:0:ih*0.75,boxblur=20:20[blurred];" +
         "[base][blurred]overlay=0:main_h*0.75[outv]";
 
-      ffmpeg(inputPath)
+      const command = ffmpeg(inputPath)
         .complexFilter(filterGraph)
         .outputOptions([
-          "-map [outv]",
-          "-map 0:a? -c:a aac -b:a 128k"
+          "-map", "[outv]",
+          "-map", "0:a?",
+          "-c:v", "libx264",
+          "-preset", "fast",
+          "-c:a", "aac",
+          "-b:a", "128k"
         ])
-        .duration(cutDuration)
-        .on("error", (err) => {
-          console.error("Erro no FFmpeg:", err.message);
-          res.status(500).send("Erro no FFmpeg: " + err.message);
-
-          try { fs.unlinkSync(inputPath); } catch {}
-          try { fs.unlinkSync(outputPath); } catch {}
+        .duration(finalDuration)
+        .on("error", err => {
+          return res.status(500).send("Erro no FFmpeg: " + err.message);
         })
         .on("end", () => {
           fs.readFile(outputPath, (err, data) => {
-            if (err) {
-              console.error("Erro lendo arquivo final:", err);
-              return res.status(500).send("Erro ao ler vídeo final.");
-            }
+            if (err) return res.status(500).send("Erro ao ler vídeo final.");
 
             res.setHeader("Content-Type", "video/mp4");
             res.send(data);
@@ -67,7 +57,6 @@ app.post("/process-video", upload.single("video"), async (req, res) => {
     });
 
   } catch (e) {
-    console.error("Erro geral:", e);
     return res.status(500).send("Erro interno: " + e.message);
   }
 });
